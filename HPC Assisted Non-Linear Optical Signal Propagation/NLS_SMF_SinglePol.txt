@@ -1,0 +1,100 @@
+fftw_complex* NLS_SMF_SinglePol(fftw_complex* Ein, double Length, double Gamma, double Disp, double a_loss, double* w, double MaxPhaseChange, double MaxStepWidth, double Ein_Length, double NSamples)
+{
+	double z0 = 0;
+	double c = 3 * pow(10, 8);
+	double lambda0 = 1550 * pow(10, -9);
+	double alpha = (a_loss) * (1 / log10(exp(1))) / 10;
+	double beta2 = -(pow(lambda0, 2)) * Disp / (2 * PI * c);
+
+	double dph_max = MaxPhaseChange;
+	_Dcomplex* temp = NULL;
+	double num, max = 0;
+	temp = (_Dcomplex*)malloc(Ein_Length * sizeof(_Dcomplex));
+	
+	for (int i = 0; i < Ein_Length; i++)
+	{
+		temp[i] = (_Dcomplex){ Ein[i][REAL], Ein[i][IMAG] };
+		num = pow(cabs(temp[i]), 2);
+		if (num >= max)
+		{
+			max = num;
+		}
+	}
+	free(temp);
+	double dz_phase = dph_max / (Gamma * max);
+	double dz;
+	if (MaxStepWidth < dz_phase)
+	{
+		dz = MaxStepWidth;
+	}
+	else
+	{
+		dz = dz_phase;
+	}
+
+	_Dcomplex* TF_DispFiber = NULL;
+	fftw_complex* PF = NULL;
+	fftw_complex* E_out_disp = NULL;
+	fftw_complex* E_out_nl = NULL;
+
+	TF_DispFiber = (_Dcomplex*)malloc(NSamples * sizeof(_Dcomplex));
+	PF = (fftw_complex*)fftw_malloc(NSamples * sizeof(fftw_complex));
+	E_out_disp = (fftw_complex*)fftw_malloc(Ein_Length * sizeof(fftw_complex));
+	E_out_nl = (fftw_complex*)fftw_malloc(Ein_Length * sizeof(fftw_complex));
+
+	while (z0 + dz < Length)
+	{
+		//First step (dispersive of Fourier)
+		fft(Ein, PF, (int)Ein_Length);
+		fftshift(PF, PF, (int)Ein_Length);
+
+		double temp1 = 0;
+		for (int i = 0; i < NSamples; i++)
+		{
+			temp1 = (-beta2) * (pow(w[i], 2) / 2) * (dz / 2);
+			TF_DispFiber[i] = (_Dcomplex){ 0, temp1 };
+			TF_DispFiber[i] = cexp(TF_DispFiber[i]);
+
+			double real_temp = creal(TF_DispFiber[i]);
+			double imag_temp = cimag(TF_DispFiber[i]);
+			real_temp = real_temp * exp((-(alpha / 2) * (dz / 2)));
+			imag_temp = imag_temp * exp((-(alpha / 2) * (dz / 2)));
+
+			TF_DispFiber[i] = (_Dcomplex){ real_temp, imag_temp };
+
+			double PF_temp_real = PF[i][REAL];
+			PF[i][REAL] = (PF[i][REAL] * real_temp) - (PF[i][IMAG] * imag_temp);
+			PF[i][IMAG] = (PF_temp_real * imag_temp) + (PF[i][IMAG] * real_temp);
+		}
+		ifftshift(PF, PF, (int)Ein_Length);
+		ifft(PF, E_out_disp, (int)Ein_Length);
+
+		//2nd Step (non-linear section)
+		for (int i = 0; i < Ein_Length; i++)
+		{
+			_Dcomplex temp2 = { E_out_disp[i][REAL], E_out_disp[i][IMAG] };
+			double abs_temp = cabs(temp2);
+			abs_temp = Gamma * dz * pow(abs_temp, 2);
+			temp2 = (_Dcomplex){ 0, (-1) * abs_temp };
+			temp2 = cexp(temp2);
+
+			E_out_nl[i][REAL] = (E_out_disp[i][REAL] * creal(temp2)) - (E_out_disp[i][IMAG] * cimag(temp2));
+			E_out_nl[i][IMAG] = (E_out_disp[i][REAL] * cimag(temp2)) + (E_out_disp[i][IMAG] * creal(temp2));
+		}
+
+		//Final step (dispersive of Fourier)
+		fft(E_out_nl, PF, Ein_Length);
+		fftshift(PF, PF, Ein_Length);
+
+		for (int i = 0; i < Ein_Length; i++)
+		{
+			double PF_temp_real = PF[i][REAL];
+			PF[i][REAL] = (PF[i][REAL] * creal(TF_DispFiber[i])) - (PF[i][IMAG] * cimag(TF_DispFiber[i]));
+			PF[i][IMAG] = (PF_temp_real * cimag(TF_DispFiber[i])) + (PF[i][IMAG] * creal(TF_DispFiber[i]));
+		}
+		ifftshift(PF, PF, Ein_Length);
+		ifft(PF, E_out_disp, Ein_Length);
+
+		//Calculate parameters for the next step
+	}
+}
